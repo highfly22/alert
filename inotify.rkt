@@ -1,14 +1,11 @@
 #lang racket
 
-(require ffi/unsafe)
+(require ffi/unsafe
+         racket/place)
 
-(provide (all-defined-out))
+(provide inotify-event read-events _inotify_init _inotify_add_watch _inotify_rm_watch buffer-size read-worker)
 
 (define libc (ffi-lib #f))
-
-(define _fd_t (make-ctype _int #f #f))
-
-(define _mask_t (make-ctype _uint32 #f #f))
 
            ;; struct inotify_event {
            ;;     int      wd;       /* Watch descriptor */
@@ -23,7 +20,8 @@
                               mask
                               cookie
                               len
-                              name))
+                              name)
+  #:prefab)
 
 
 ;; /* Supported events suitable for MASK parameter of INOTIFY_ADD_WATCH.  */
@@ -63,33 +61,54 @@
 
 ;; int inotify_init(void);
 
-(define _inotify_init (get-ffi-obj "inotify_init" libc (_fun -> _fd_t)))
+(define _inotify_init (get-ffi-obj "inotify_init" libc
+                                   (_fun -> _int32)))
 
 ;; int inotify_add_watch(int fd, const char *pathname, uint32_t mask);
 
-(define _inotify_add_watch (get-ffi-obj "inotify_add_watch" libc (_fun _fd_t _string _mask_t -> _int)))
+(define _inotify_add_watch (get-ffi-obj "inotify_add_watch" libc
+                                        (_fun _int32 _string _uint32 -> _int)))
 
 ;; int inotify_rm_watch(int fd, uint32_t wd);
-(define _inotify_rm_watch (get-ffi-obj "inotify_rm_watch" libc (_fun _fd_t _mask_t
-                                                                    -> (r : _int))))
+(define _inotify_rm_watch (get-ffi-obj "inotify_rm_watch" libc
+                                       (_fun _int32 _uint32 -> (r : _int))))
+
 ;; ssize_t read(int fd, void *buf, size_t count);
-(define _read (get-ffi-obj "read" libc (_fun #:async-apply (lambda (f) (f))
-                                             #:save-errno 'posix
-                                            _fd_t
-                                            (output : (_bytes o size))
-                                            (size : _uint32)
-                                            -> (r : _int32)
-                                            -> (values r saved-errno output))))
+(define _read (get-ffi-obj "read" libc
+                           (_fun #:async-apply (lambda (f) (displayln f))
+                                 #:save-errno 'posix
+                                 _int32
+                                 (output : (_bytes o size))
+                                 (size : _uint32)
+                                 -> (r : _int32)
+                                 -> (values r (saved-errno) output))))
 
-(define (read-inotify-events fd)
-  (define-values (r e b) (_read fd 100))
+(define buffer-size (make-parameter 256))
+
+(define (read-events/freezing fd)
+  (define-values (r e b) (_read fd (buffer-size)))
+  (and (< r 0) (= e 4) (break-enabled) (break-thread (current-thread)))
   (define pos 0)
-  (for/list (#:when (< pos r))
-            (let* ([wd (integer-bytes->integer b #t (system-big-endian?) pos (+ pos 4))]
-                   [mask (integer-bytes->integer b #f (system-big-endian?) (+ pos 4) (+ pos 8))]
-                   [cookie (integer-bytes->integer b #f (system-big-endian?) (+ pos 8) (+ pos 12))]
-                   [len (integer-bytes->integer b #f (system-big-endian?) (+ pos 12) (+ pos 16))]
-                   [name (bytes->string/locale (subbytes b (+ pos 16) (+ 1 len)))])
-              (set! pos (+ pos 16 len))
-              (make-inotify-event wd mask cookie len name))))
+  (with-input-from-bytes
+   b
+   (thunk
+    (for/list ([i (stop-before (in-naturals) (lambda (i) (>= pos r)))])
+     (let* ([wd (integer-bytes->integer (read-bytes 4) #t)]
+            [mask (integer-bytes->integer (read-bytes 4) #f)]
+            [cookie (integer-bytes->integer (read-bytes 4) #f)]
+            [len (integer-bytes->integer (read-bytes 4) #f)]
+            [oname (read-bytes len)]
+            [olen (for/last ([i (in-range len)]) #:break (zero? (bytes-ref oname i)) i)]
+            [name (cond [olen (bytes->string/utf-8 (subbytes oname 0 (add1 olen)))]
+                        [else #f])])
+       (set! pos (+ pos 16 len))
+       (make-inotify-event wd mask cookie len name))))))
 
+(define (read-worker pch)
+  (define fd (place-channel-get pch))
+  (place-channel-put pch (read-events/freezing fd)))
+
+(define (read-events fd)
+  (define pch (dynamic-place "inotify.rkt" 'read-worker))
+  (place-channel-put pch fd)
+  (place-channel-get pch))
