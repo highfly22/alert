@@ -1,28 +1,63 @@
 #lang racket
 
 (require "inotify.rkt"
-         rackunit)
+         racket/file
+         rackunit
+         rackunit/text-ui)
 
-(define i (_inotify_init))
+(define inotify-tests
+  (test-suite
+   "inotify tests"
+   #:before (lambda () (display "Before\n"))
+   #:after  (lambda () (display "After\n"))
+   (test-case
+    "An simple touch test"
+    (define dir (make-temporary-file "rkttmp~a" 'directory))
+    (define dir2 (make-temporary-file "rkttmp~a" 'directory))
+    (system (format "mkdir -p ~a/a/b/c/d" dir2))
 
-(define f (_inotify_add_watch i "/home/haiwei/tmp/" (bitwise-ior #x1 #x2 #x20 #x100 #x200)))
+    (define ch (make-channel))
 
+    (define inotify (new inotify%))
 
-(thread (thunk
-         (system "touch /home/haiwei/tmp/a")
-         (sleep 1)
-         (system "touch /home/haiwei/tmp/a")))
+    (send inotify add-watch
+          dir
+          '(IN_MODIFY IN_CREATE IN_DELETE IN_DELETE_SELF IN_MOVED_FROM IN_MOVED_TO)
+          (lambda (watch name mask)
+            (print (list watch name mask)) (newline)
+            (channel-put ch (list watch name mask)))
+          #t)
+    (send inotify start)
 
-(define t (thread (thunk
-                     (displayln "reading events")
-                     (define l (read-events i))
-                     (check-equal? l (list #s(inotify-event 1 32 0 16 "a"))))))
+    (system (format "touch ~a/1" dir))
+    (check-equal? (channel-get ch) (list dir "1" '(IN_CREATE)))
 
-(thread-wait t)
+    (system (format "mkdir ~a/d" dir))
+    (check-equal? (channel-get ch) (list dir "d" '(IN_CREATE IN_ISDIR)))
 
+    (system (format "touch ~a/d/1" dir))
+    (check-equal? (channel-get ch) (list (build-path dir "d") "1" '(IN_CREATE)))
 
+    (system (format "rm -rf ~a/d" dir))
+    (channel-get ch)
+    (channel-get ch)
+    (channel-get ch)
+    (channel-get ch)
 
+    (system (format "mv ~a/a ~a" dir2 dir))
+    (system (format "rm -rf ~a" dir2))
+    (check-equal? (channel-get ch) (list dir "a" '(IN_MOVED_TO IN_ISDIR)))
 
+    (system (format "touch ~a/a/b/1" dir))
+    (check-equal? (channel-get ch) (list (build-path dir "a/b") "1" '(IN_CREATE)))
 
+    (system (format "rm -rf ~a/a/" dir))
+    (channel-get ch)
+    
+    (send inotify stop-and-close)
+    (system (format "rm -rf ~a" dir))
+    )))
 
+(module* main #f
+  (run-tests inotify-tests))
 
