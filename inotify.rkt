@@ -7,11 +7,6 @@
 ;;; author (FFI): Laurent orseau <laurent orseau gmail com> - 2013-01-04
 
 (require "errno-base.rkt"
-         x11-racket/fd
-         ; go to your racket project directory and do:
-         ; git clone http://github.com/kazzmir/x11-racket.git
-         ; raco link x11-racket
-         ; raco setup x11-racket
          ffi/unsafe
          ffi/unsafe/define
          racket/class
@@ -187,6 +182,10 @@ after adding the watch.
                          (EINVAL . "The watch descriptor wd is not valid; or fd is not an inotify file descriptor"))))
                #t)))
 
+(define open-fd-input-port
+  (get-ffi-obj "scheme_make_fd_input_port" (ffi-lib #f)
+               (_fun (fd : _int) (_scheme = "fd-port") (_int = 0) (_int = 0) -> _racket)))
+
 ;=================;
 ;=== Interface ===;
 ;=================;
@@ -217,122 +216,90 @@ after adding the watch.
     (check-equal? "" (proc (bytes 0)))
     ))
 
-(define inotify%
+(define diretory-watcher%
   (class object%
     (super-new)
-    (init-field callback)
-    ;; callback: (path-string? (or/c string? #f) (listof symbol?) . -> . any)
-    (field [watches '()]
-           [fd #f]
-           [in #f]
-           [read-thread #f])
-    
-    (define ev (make-inotify-empty-event))
-    (define ev-bytes (make-sized-byte-string ev (ctype-sizeof _inotify_event)))
-
-    (define/public (init)
-      (set! fd (inotify_init)))
-    (init)
-    
-    (define (find-watch-descriptor watch)
-      (define elt (findf (λ(p)(equal? watch (cdr p))) watches))
-      (and elt (car elt)))
+    (init-field path [callback #f] [filter #f] [recursive? #f] [follow-links? #t] [finalize? #f])
+    ;; callback: (path-string? (listof symbol?) . -> . any)
+    (field [watches (make-hash)]
+           [rwatches (make-hash)]
+           [fd (inotify_init)]
+           [in (open-fd-input-port fd)]
+           [mask '(IN_MODIFY IN_CREATE IN_DELETE IN_DELETE_SELF IN_MOVED_FROM IN_MOVED_TO)])
     
     (define (add-watch-base dir mask)
-      (printf "Adding watch to: ~a ~a\n" dir mask)
       (define wd (inotify_add_watch fd dir mask))
-      (set! watches (cons (cons wd dir) watches))
-      )
-    
-    ;; follow-links? : if #f, for sub-directories that are sym-links,
-    ;;   do not add a directory watch.
-    ;; TODO: 
-    ;;  - auto-add: when a directory is created in a watched dir, auto-watch it
-    ;;  - add inclusion/exclusion pattern lists (for directories)
-    (define/public (add-watch path mask [recursive? #f]
-                              #:follow-links? [follow-links? #t])
+      (printf "add-watch-base ~a ~a ~a\n" dir mask wd)
+      (hash-set! watches wd dir)
+      (hash-set! rwatches dir wd))
+
+    (define (add-watch path)
       (unless (path-string? path)
         (raise-argument-error 'add-watch "path-string?" path))
       (add-watch-base path mask)
       (when (and recursive? (directory-exists? path))
         (for ([d (in-directory path)])
           (when (and (directory-exists? d)
-                     (or follow-links? (not (link-exists? d))))
+                     (or follow-links? (not (link-exists? d)))
+                     (or (not filter) (filter d)))
             (printf "Adding recursive watch: ~a\n" d)
-            (add-watch-base d mask)
-            )))
-      )
-    
-    (define/public (remove-watch watch) 
-      (define wd (find-watch-descriptor watch))
-      (if wd
-          (begin (inotify_rm_watch fd wd)
-                 (set! watches (dict-remove watches wd)))
-          (error 'remove-watch "Watch descriptor not found for" watch)))
-    
-    (define/public (remove-all-watches)
-      (for ([wd (in-dict-keys watches)])
-        (inotify_rm_watch fd wd))
-      (set! watches '()))
+            (add-watch-base d mask)))))
 
-    (define/public (start) 
-      (set! in (open-fd-input-port fd))
-      (set! read-thread
-        (thread
-         (λ()
-           (let loop ()
-             (sync/enable-break
-              (handle-evt (read-bytes!-evt ev-bytes in)
-                          (lambda (_fd)
-                            (print (list _fd ev-bytes))
+    (define (start)
+      (define (combine-path base name)
+        (if name
+            (build-path base name)
+            base))
+      (define ev (make-inotify-empty-event))
+      (define ev-bytes (make-sized-byte-string ev (ctype-sizeof _inotify_event)))
+      (thread
+       (λ()
+         (let loop ()
+           (sync/enable-break
+            (handle-evt (read-bytes!-evt ev-bytes in)
+                        (lambda (_fd)
+                          (define len (inotify_event-len ev))
+                          (define name #f)
+                          (when (> len 0)
+                            (set! name (null-terminated-bytes->string/locale (read-bytes len in))))
+                          
+                          (define wd (inotify_event-wd ev))
+                          (define watch (hash-ref watches wd #f))
+                          (define mask (inotify_event-mask ev))
+                          (when watch
+                            (when (and recursive?
+                                       (member 'IN_ISDIR mask)
+                                       (or (member 'IN_MOVED_TO mask)
+                                           (member 'IN_CREATE mask)))
+                              (add-watch (combine-path watch name)))
+                            (when (and (member 'IN_ISDIR mask)
+                                       (or (member 'IN_DELETE mask)
+                                           (member 'IN_MOVED_FROM mask)))
+                              (define child-watch (combine-path watch name))
+                              (define child-wd (hash-ref rwatches child-watch))
+                              (hash-remove! watches child-wd)
+                              (hash-remove! rwatches child-watch)
+                              (with-handlers ([exn:fail? (lambda (e) #t)])
+                                (inotify_rm_watch fd child-wd)))
+                            (print (list watch name mask wd))
                             (newline)
-                            (displayln (inotify_event->list* ev))
-                            (define len (inotify_event-len ev))
-                            (define name #f)
-                            (when (> len 0)
-                              (set! name (null-terminated-bytes->string/locale (read-bytes len in))))
-                            (print (list 'name name))
-                            (newline)
-                            
-                            (define watch (dict-ref watches (inotify_event-wd ev)))
-                            (define mask (inotify_event-mask ev))
-                            (callback watch name mask)
-                            (loop)))
-              (handle-evt (port-closed-evt in)
-                          (λ(_a)(displayln "Port closed.")))))
-           (displayln "Thread ended.")))))
-    
+                            (and callback (callback (combine-path watch name) mask)))
+                          (loop)))
+            (handle-evt (port-closed-evt in)
+                        (λ(_a)(displayln "Port closed.")))))
+         (displayln "Thread ended."))))
+
+    (define (init)
+      (add-watch path)
+      (start))
+    (init)
+
     (define/public (stop-and-close) 
       (when in
         ;(remove-all-watches) ; no need: done automatically when closing the port, which closes the file descriptor
         ; This also automatically ends the thread
         (close-input-port in)
-        (set! in #f)
+        ;; (set! in #f)
         ))
     ))
 
-;; TESTS
-(module+ main
-  (require racket/file)
-  
-  (define dir (make-temporary-file "rkttmp~a" 'directory))
-  
-  (define inotify (new inotify% 
-                       [callback (λ(watch name mask)
-                                   (displayln (list watch name mask)))]))
-  (send inotify add-watch dir '(IN_MODIFY IN_CREATE IN_DELETE IN_MOVED_FROM IN_MOVED_TO) #t)
-  (send inotify start)
-  (displayln "inotify started. You may now make modifications in the specified directory.")
-  
-  ; Then go to directory dir in a terminal and do the following:
-  ; $ touch 1.txt
-  ; $ rm 1.txt
-  ; $ touch 2.txt
-  ; $ mv 2.txt 3.txt
-  ; You should then see a sequence of IN_CREATE, IN_DELETE, IN_CREATE, IN_MOVED_FROM, 
-  ; and IN_MOVED_TO events.
-  
-  (displayln "Enter something to end the program.")
-  (read-line)
-  (send inotify stop-and-close)
-  )
