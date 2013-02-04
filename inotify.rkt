@@ -11,8 +11,7 @@
          ffi/unsafe/define
          racket/class
          racket/port
-         racket/dict
-         )
+         racket/dict)
 
 (provide (all-defined-out))
 
@@ -216,44 +215,70 @@ after adding the watch.
     (check-equal? "" (proc (bytes 0)))
     ))
 
+(define-struct collection (name wd children))
+
+(define (collection-add parent child name)
+  (and parent
+       (hash-set! (collection-children parent) name child)))
+
+(define (collection-remove parent child-name)
+  (begin0
+      (hash-ref (collection-children parent) child-name)
+    (hash-remove! (collection-children parent) child-name)))
+
 (define diretory-watcher%
   (class object%
     (super-new)
     (init-field path [callback #f] [filter #f] [recursive? #f] [follow-links? #t] [finalize? #f])
     ;; callback: (path-string? (listof symbol?) . -> . any)
     (field [watches (make-hash)]
-           [rwatches (make-hash)]
            [fd (inotify_init)]
            [in (open-fd-input-port fd)]
-           [mask '(IN_MODIFY IN_CREATE IN_DELETE IN_DELETE_SELF IN_MOVED_FROM IN_MOVED_TO)])
+           [mask '(IN_MODIFY IN_CREATE IN_DELETE IN_MOVED_FROM IN_MOVED_TO)])
     
-    (define (add-watch-base dir mask)
-      (define wd (inotify_add_watch fd dir mask))
-      (printf "add-watch-base ~a ~a ~a\n" dir mask wd)
-      (hash-set! watches wd dir)
-      (hash-set! rwatches dir wd))
+    (define (complete-name parent name)
+      (if parent (build-path (collection-name parent) name) name))
 
-    (define (add-watch path)
-      (unless (path-string? path)
-        (raise-argument-error 'add-watch "path-string?" path))
-      (add-watch-base path mask)
-      (when (and recursive? (directory-exists? path))
-        (for ([d (in-directory path)])
-          (when (and (directory-exists? d)
-                     (or follow-links? (not (link-exists? d)))
-                     (or (not filter) (filter d)))
-            (printf "Adding recursive watch: ~a\n" d)
-            (add-watch-base d mask)))))
+    (define (add-watch-base parent cname name)
+      (define wd (inotify_add_watch fd cname mask))
+      (printf "add-watch-base ~a ~a ~a\n" cname mask wd)
+      (define c (make-collection cname wd (make-hash)))
+      (hash-set! watches wd c)
+      (collection-add parent c name)
+      c)
+
+    (define (add-watch parent name)
+      (define cname (complete-name parent name))
+      (define c (add-watch-base parent cname name))
+      (when (and recursive? (directory-exists? cname))
+        (for ([d (directory-list cname)])
+          (define cname (complete-name c d))
+          (when (and (directory-exists? cname)
+                     (or follow-links? (not (link-exists? cname)))
+                     (or (not filter) (filter cname)))
+            (add-watch c (path->string d))))))
+
+    
+    (define (remove-watch child)
+      (printf "remove-watch ~a\n" (collection-wd child))
+      (define child-wd (collection-wd child))
+      (hash-remove! watches child-wd)
+      (with-handlers ([exn:fail? (lambda (e) #t)])
+        (inotify_rm_watch fd child-wd))
+      (when recursive?
+        (for [(i (in-hash-values (collection-children child)))]
+          (remove-watch i))))
 
     (define (start)
-      (define (combine-path base name)
-        (if name
-            (build-path base name)
-            base))
-      (define ev (make-inotify-empty-event))
-      (define ev-bytes (make-sized-byte-string ev (ctype-sizeof _inotify_event)))
       (thread
        (λ()
+         (define (combine-path watch name)
+           (define base (collection-name watch))
+           (if name (build-path base name) base))
+
+         (define ev (make-inotify-empty-event))
+         (define ev-bytes (make-sized-byte-string ev (ctype-sizeof _inotify_event)))
+
          (let loop ()
            (sync/enable-break
             (handle-evt (read-bytes!-evt ev-bytes in)
@@ -262,44 +287,43 @@ after adding the watch.
                           (define name #f)
                           (when (> len 0)
                             (set! name (null-terminated-bytes->string/locale (read-bytes len in))))
-                          
                           (define wd (inotify_event-wd ev))
-                          (define watch (hash-ref watches wd #f))
                           (define mask (inotify_event-mask ev))
+                          
+                          (print (list wd name mask)) (newline)
+
+                          (define watch (hash-ref watches wd #f))
                           (when watch
                             (when (and recursive?
                                        (member 'IN_ISDIR mask)
                                        (or (member 'IN_MOVED_TO mask)
                                            (member 'IN_CREATE mask)))
-                              (add-watch (combine-path watch name)))
+                              (add-watch watch name))
                             (when (and (member 'IN_ISDIR mask)
                                        (or (member 'IN_DELETE mask)
                                            (member 'IN_MOVED_FROM mask)))
-                              (define child-watch (combine-path watch name))
-                              (define child-wd (hash-ref rwatches child-watch))
-                              (hash-remove! watches child-wd)
-                              (hash-remove! rwatches child-watch)
-                              (with-handlers ([exn:fail? (lambda (e) #t)])
-                                (inotify_rm_watch fd child-wd)))
-                            (print (list watch name mask wd))
-                            (newline)
-                            (and callback (callback (combine-path watch name) mask)))
+                              (define child (collection-remove watch name))
+                              (remove-watch child))
+                            (when (and (member 'IN_ISDIR mask)
+                                       (member 'IN_DELETE_SELF mask))
+                              (remove-watch watch))
+                            (and callback
+                                 (callback (combine-path watch name) mask)))
                           (loop)))
             (handle-evt (port-closed-evt in)
                         (λ(_a)(displayln "Port closed.")))))
          (displayln "Thread ended."))))
 
     (define (init)
-      (add-watch path)
+      (add-watch #f path)
       (start))
     (init)
 
     (define/public (stop-and-close) 
       (when in
-        ;(remove-all-watches) ; no need: done automatically when closing the port, which closes the file descriptor
-        ; This also automatically ends the thread
+        ;; (remove-all-watches) ; no need: done automatically when closing the port, which closes the file descriptor
+        ;; This also automatically ends the thread
         (close-input-port in)
         ;; (set! in #f)
-        ))
-    ))
+        ))))
 

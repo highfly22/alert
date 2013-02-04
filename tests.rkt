@@ -5,6 +5,10 @@
          rackunit
          rackunit/text-ui)
 
+(define (system/print str)
+  (printf "System: ~a\n" str)
+  (system str))
+
 (define watcher-tests
   (test-suite
    "inotify tests"
@@ -14,12 +18,13 @@
     "An simple touch test"
     (define dir (make-temporary-file "rkttmp~a" 'directory))
     (define dir2 (make-temporary-file "rkttmp~a" 'directory))
-    (system (format "mkdir -p ~a/a/b/c/d" dir2))
+    (system/print (format "mkdir -p ~a/a/b/c/d" dir2))
 
     (define ch (make-channel))
 
     (define watcher (new diretory-watcher%
                          [path dir]
+                         [callback (lambda (name mask) (print (list name mask)) (newline))]
                          [recursive? #t]))
 
     ;; (send inotify add-watch
@@ -32,40 +37,41 @@
     ;;       #t)
     ;; (send inotify start)
 
-    (system (format "touch ~a/1" dir))
+    (system/print (format "touch ~a/1" dir))
     ;; (check-equal? (channel-get ch) (list dir "1" '(IN_CREATE)))
 
-    (system (format "mkdir ~a/d" dir))
+    (system/print (format "mkdir ~a/d" dir))
     ;; (check-equal? (channel-get ch) (list dir "d" '(IN_CREATE IN_ISDIR)))
 
-    (system (format "touch ~a/d/1" dir))
+    (system/print (format "touch ~a/d/1" dir))
     ;; (check-equal? (channel-get ch) (list (build-path dir "d") "1" '(IN_CREATE)))
 
-    (system (format "rm -rf ~a/d" dir))
+    (system/print (format "rm -rf ~a/d" dir))
     ;; (channel-get ch)
     ;; (channel-get ch)
     ;; (channel-get ch)
     ;; (channel-get ch)
 
-    (system (format "mv ~a/a ~a" dir2 dir))
+    (system/print (format "mv ~a/a ~a" dir2 dir))
     ;; (check-equal? (channel-get ch) (list dir "a" '(IN_MOVED_TO IN_ISDIR)))
 
-    (system (format "touch ~a/a/b/1" dir))
+    (system/print (format "touch ~a/a/b/1" dir))
     ;; (check-equal? (channel-get ch) (list (build-path dir "a/b") "1" '(IN_CREATE)))
 
-    (system (format "mv ~a/a/b ~a" dir dir2))
+    (system/print (format "mv ~a/a/b ~a" dir dir2))
     
-    (system (format "touch ~a/b/2" dir2))
+    (system/print (format "touch ~a/b/2" dir2))
 
-    (system (format "rm -rf ~a/a/" dir))
+    (system/print (format "rm -rf ~a/a/" dir))
     ;; (channel-get ch)
     
-    (system (format "ls -R ~a" dir))
-    (system (format "ls -R ~a" dir2))
+    ;; (system/print (format "ls -R ~a" dir))
+    ;; (system/print (format "ls -R ~a" dir2))
     
+    (system/print (format "rm -rf ~a" dir))
+
     (send watcher stop-and-close)
-    (system (format "rm -rf ~a" dir))
-    (system (format "rm -rf ~a" dir2))
+    (system/print (format "rm -rf ~a" dir2))
     )))
 
 (module* main #f
