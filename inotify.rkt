@@ -263,7 +263,7 @@ after adding the watch.
       (printf "remove-watch ~a\n" (collection-wd child))
       (define child-wd (collection-wd child))
       (hash-remove! watches child-wd)
-      (with-handlers ([exn:fail? (lambda (e) #t)])
+      (with-handlers ([exn:fail? (λ(e) #t)])
         (inotify_rm_watch fd child-wd))
       (when recursive?
         (for [(i (in-hash-values (collection-children child)))]
@@ -282,7 +282,7 @@ after adding the watch.
          (let loop ()
            (sync/enable-break
             (handle-evt (read-bytes!-evt ev-bytes in)
-                        (lambda (_fd)
+                        (λ(_fd)
                           (define len (inotify_event-len ev))
                           (define name #f)
                           (when (> len 0)
