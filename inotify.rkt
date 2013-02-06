@@ -11,7 +11,8 @@
          ffi/unsafe/define
          racket/class
          racket/port
-         racket/dict)
+         racket/dict
+         racket/path)
 
 (provide (all-defined-out))
 
@@ -215,6 +216,18 @@ after adding the watch.
     (check-equal? "" (proc (bytes 0)))
     ))
 
+(define (link-overlap? base link)
+  (define b (path->string (simple-form-path (resolve-path base))))
+  (define l (path->string (simple-form-path (resolve-path link))))
+  (and (<= (string-length b) (string-length l))
+   (equal? b (substring l 0 (string-length b)))))
+
+(module+ test
+  (check-equal? #t (link-overlap? "." "."))
+  (check-equal? #t (link-overlap? "." "inotify.rkt"))
+  (check-equal? #f (link-overlap? "." ".."))
+  (check-equal? #f (link-overlap? "." "../..")))
+
 (define-struct collection (name wd children))
 
 (define (collection-add parent child name)
@@ -229,7 +242,12 @@ after adding the watch.
 (define diretory-watcher%
   (class object%
     (super-new)
-    (init-field path [callback #f] [filter #f] [recursive? #f] [follow-links? #t] [finalize? #f])
+    (init-field path
+                [callback #f]
+                [ignore #rx"^.git$|^.svn$|.log$|^compiled$|^\\.#|^#.*#$"]
+                [recursive? #f]
+                [follow-links? #t]
+                [finalize? #f])
     ;; callback: (path-string? (listof symbol?) . -> . any)
     (field [watches (make-hash)]
            [fd (inotify_init)]
@@ -241,7 +259,7 @@ after adding the watch.
 
     (define (add-watch-base parent cname name)
       (define wd (inotify_add_watch fd cname mask))
-      (printf "add-watch-base ~a ~a ~a\n" cname mask wd)
+      (log-debug "add-watch-base ~a ~a ~a\n" cname mask wd)
       (define c (make-collection cname wd (make-hash)))
       (hash-set! watches wd c)
       (collection-add parent c name)
@@ -254,13 +272,14 @@ after adding the watch.
         (for ([d (directory-list cname)])
           (define cname (complete-name c d))
           (when (and (directory-exists? cname)
-                     (or follow-links? (not (link-exists? cname)))
-                     (or (not filter) (filter cname)))
+                     (or (not (link-exists? cname))
+                         (and follow-links?
+                              (link-overlap? path cname)))
+                     (or (not ignore) (not (regexp-match ignore d))))
             (add-watch c (path->string d))))))
-
     
     (define (remove-watch child)
-      (printf "remove-watch ~a\n" (collection-wd child))
+      (log-debug "remove-watch ~a\n" (collection-wd child))
       (define child-wd (collection-wd child))
       (hash-remove! watches child-wd)
       (with-handlers ([exn:fail? (λ(e) #t)])
@@ -290,10 +309,11 @@ after adding the watch.
                           (define wd (inotify_event-wd ev))
                           (define mask (inotify_event-mask ev))
                           
-                          (print (list wd name mask)) (newline)
+                          (log-debug "Event: ~a\n" (list wd name mask))
 
                           (define watch (hash-ref watches wd #f))
-                          (when watch
+                          (when (and watch
+                                     (or (not ignore) (not (regexp-match ignore name))))
                             (when (and recursive?
                                        (member 'IN_ISDIR mask)
                                        (or (member 'IN_MOVED_TO mask)
@@ -311,8 +331,8 @@ after adding the watch.
                                  (callback (combine-path watch name) mask)))
                           (loop)))
             (handle-evt (port-closed-evt in)
-                        (λ(_a)(displayln "Port closed.")))))
-         (displayln "Thread ended."))))
+                        (λ(_a)(log-debug "Port closed.")))))
+         (log-debug "Thread ended."))))
 
     (define (init)
       (add-watch #f path)
