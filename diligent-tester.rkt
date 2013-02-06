@@ -18,8 +18,9 @@
        [callback (lambda (name mask)
                    (match (path->string name)
                      [(regexp #rx".rkt$")
-                      (box-print (date->string (current-date))
-                                 (format "Notifying \"~a\" ~a" name mask))
+                      (box-print #:center? #t
+                       (date->string (current-date))
+                       (format "~a \"~a\"" mask name))
                       (parameterize ([current-directory path])
                         (system "racket tests.rkt"))]
                      [else #t]))]))

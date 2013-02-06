@@ -8,8 +8,10 @@
   (define max-col (apply max (map string-length strings)))
   (define truncate? (> max-col (box-print-columns)))
   (define col (min max-col (box-print-columns)))
+
   (define (print-header)
     (displayln (make-string (+ col 4) #\-)))
+
   (define (print-line s)
     (define len (string-length s))
     (cond [center?
