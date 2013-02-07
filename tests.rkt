@@ -2,6 +2,7 @@
 
 (require "inotify.rkt"
          "box-print.rkt"
+         "alert.rkt"
          racket/file
          rackunit
          rackunit/text-ui
@@ -92,6 +93,17 @@
      "Hello World!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!wowowowowow!!!!!!"
      "Hello World!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!bobobobobob!!!!!"))))
 
+(define alert-tests
+  (test-suite
+   "alert tests"
+   (test-case
+    "A normal test"
+    (define watcher (watch-rules (path) "."
+                                 [#px"\\.rkt$"
+                                     (displayln path)]))
+    (send watcher stop-and-close))))
+
 (module* main #f
   (run-tests watcher-tests)
-  (run-tests box-print-tests))
+  (run-tests box-print-tests)
+  (run-tests alert-tests))

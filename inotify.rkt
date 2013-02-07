@@ -335,6 +335,8 @@ after adding the watch.
          (log-debug "Thread ended."))))
 
     (define (init)
+      (unless (path-string? path)
+        (raise-argument-error 'watch-directory% "path-string?" path))
       (add-watch #f path)
       (start))
     (init)

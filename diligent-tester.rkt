@@ -2,28 +2,22 @@
 
 #lang racket
 
-(require "inotify.rkt"
+(require ;; "inotify.rkt"
+         "alert.rkt"
          "box-print.rkt"
          racket/date
          racket/sandbox)
 
 (provide (all-defined-out))
 
-(define (diligent-tester path)
-  (unless (path-string? path)
-    (raise-argument-error 'diligent-tester "path-string?" path))
-  (new diretory-watcher%
-       [path path]
-       [recursive? #t]
-       [callback (lambda (name mask)
-                   (match (path->string name)
-                     [(regexp #rx".rkt$")
-                      (box-print #:center? #t
-                       (date->string (current-date))
-                       (format "~a \"~a\"" mask name))
-                      (parameterize ([current-directory path])
-                        (system "racket tests.rkt"))]
-                     [else #t]))]))
+(define (diligent-tester base)
+  (watch-rules (path) base
+               [#px"\\.rkt$"
+                   (box-print #:center? #t
+                              (date->string (current-date))
+                              (format "Notify: \"~a\"" path))
+                   (parameterize ([current-directory base])
+                     (system "racket tests.rkt"))]))
 
 (module* main #f
     (define args (current-command-line-arguments))
