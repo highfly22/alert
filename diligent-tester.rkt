@@ -10,20 +10,17 @@
 
 (provide (all-defined-out))
 
-(define (diligent-tester base)
-  (watch-rules (path) base
-               [#px"\\.rkt$"
-                   (box-print #:center? #t
-                              (date->string (current-date))
-                              (format "Notify: \"~a\"" path))
-                   (parameterize ([current-directory base])
-                     (system "racket tests.rkt"))]))
-
+(define args (current-command-line-arguments))
 (module* main #f
-    (define args (current-command-line-arguments))
-    (cond [(= 1 (vector-length args))
-           (define p (vector-ref args 0))
-           (diligent-tester p)
-           (semaphore-wait (make-semaphore))]
-          [else
-           (print "usage: this-script path")]))
+  (cond [(= 1 (vector-length args))
+         (define base (vector-ref args 0))
+         (watch-rules (path mask) base
+                      [#px"\\.rkt$"
+                          (box-print #:center? #t
+                                     (date->string (current-date))
+                                     (format "Notify: \"~a\"" path))
+                          (parameterize ([current-directory base])
+                            (system "racket tests.rkt"))])
+         (semaphore-wait (make-semaphore))]
+        [else
+         (print "usage: this-script path")]))
