@@ -2,14 +2,14 @@
 
 (require "inotify.rkt"
          "box-print.rkt"
-         "alert.rkt"
+         "watcher-rules.rkt"
          racket/file
          rackunit
          rackunit/text-ui
          racket/sandbox)
 
 (define (system/print str)
-  (printf "System:) ~a\n" str)
+  (printf "System:> ~a\n" str)
   (system str))
 
 (define watcher-tests
@@ -26,7 +26,7 @@
 
       (define ch (make-channel))
 
-      (define watcher (new diretory-watcher%
+      (define watcher (new inotify-watcher%
                            [path dir]
                            [callback (lambda (name mask)
                                        (print (list name mask)) (newline)
@@ -98,12 +98,22 @@
    "alert tests"
    (test-case
     "A normal test"
-    (define watcher (watch-rules (path) "."
-                                 [#px"\\.rkt$"
-                                     (displayln path)]))
+    (define watcher (watcher-rules (path) "."
+                                   [#px"\\.rkt$"
+                                       (displayln path)]))
     (send watcher stop-and-close))))
 
-(module* main #f
+(module+ test
   (run-tests watcher-tests)
   (run-tests box-print-tests)
   (run-tests alert-tests))
+
+(module* main #f
+  (require racket/runtime-path
+           "watcher-command.rkt")
+  (define-runtime-path pwd ".")
+  (parameterize ([current-directory pwd])
+    (watcher-rules (name) pwd [#px".rkt$"
+                                  (call-with-limits 20 #f
+                                                    (thunk (system (format "raco test ~a" name))))]))
+  (semaphore-wait (make-semaphore)))

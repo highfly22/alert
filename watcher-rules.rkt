@@ -15,7 +15,7 @@
                             form)))
     (syntax->list forms))))
 
-(define-syntax watch-rules
+(define-syntax watcher-rules
   (lambda (stx)
     (syntax-case stx ()
       [(_ (p m) base (pattern body ...) ...)
@@ -23,7 +23,7 @@
        #'(begin
            (unless (path-string? base)
              (raise-argument-error 'watch-rules "base is not path-string?" base))
-           (new diretory-watcher%
+           (new inotify-watcher%
                 [path base]
                 [recursive? #t]
                 [callback
@@ -35,7 +35,7 @@
                       body ...] ...
                      [else #t]))]))]
       [(_ (p) base (pattern body ...) ...)
-       #`(watch-rules (p ___) base (pattern body ...) ...)]
+       #`(watcher-rules (p ___) base (pattern body ...) ...)]
       [(_ base (pattern body ...) ...)
-       #`(watch-rules (__ ___) base (pattern body ...) ...)])))
+       #`(watcher-rules (__ ___) base (pattern body ...) ...)])))
                                     

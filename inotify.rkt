@@ -239,7 +239,7 @@ after adding the watch.
       (hash-ref (collection-children parent) child-name)
     (hash-remove! (collection-children parent) child-name)))
 
-(define diretory-watcher%
+(define inotify-watcher%
   (class object%
     (super-new)
     (init-field path
@@ -313,7 +313,7 @@ after adding the watch.
 
                           (define watch (hash-ref watches wd #f))
                           (when (and watch
-                                     (or (not ignore) (not (regexp-match ignore name))))
+                                     (not (and name ignore (regexp-match ignore name))))
                             (when (and recursive?
                                        (member 'IN_ISDIR mask)
                                        (or (member 'IN_MOVED_TO mask)
